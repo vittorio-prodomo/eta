@@ -11,7 +11,14 @@ infrastructure.**
 [![PyPI version](https://badge.fury.io/py/voxel51-eta.svg)](https://pypi.org/project/voxel51-eta)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Twitter](https://img.shields.io/twitter/follow/Voxel51?style=social)](https://twitter.com/voxel51)
+
+[![Discord](https://img.shields.io/badge/Discord-7289DA?logo=discord&logoColor=white)](https://discord.gg/fiftyone-community)
+[![Hugging Face](https://img.shields.io/badge/Hugging_Face-purple?style=flat&logo=huggingface)](https://huggingface.co/Voxel51)
+[![Voxel51 Blog](https://img.shields.io/badge/Voxel51_Blog-ff6d04?style=flat)](https://voxel51.com/blog)
+[![Newsletter](https://img.shields.io/badge/Newsletter-BE5B25?logo=mail.ru&logoColor=white)](https://share.hsforms.com/1zpJ60ggaQtOoVeBqIZdaaA2ykyk)
+[![LinkedIn](https://img.shields.io/badge/In-white?style=flat&label=Linked&labelColor=blue)](https://www.linkedin.com/company/voxel51)
+[![Twitter](https://img.shields.io/badge/Twitter-000000?logo=x&logoColor=white)](https://x.com/voxel51)
+[![Medium](https://img.shields.io/badge/Medium-12100E?logo=medium&logoColor=white)](https://medium.com/voxel51)
 
 <img src="https://user-images.githubusercontent.com/25985824/78944107-2d766c80-7a8b-11ea-8863-fcb4897eecb5.png" alt="eta-infrastructure.png" width="75%"/>
 
@@ -22,11 +29,9 @@ infrastructure.**
 ETA is very portable:
 
 -   Installable on Mac or Linux
--   Supports Python 3.9 or later
+-   Supports Python 3.10 or later
 -   Supports TensorFlow 1.X and 2.X
--   Supports OpenCV 2.4+ and OpenCV 3.0+
 -   Supports CPU-only and GPU-enabled installations
--   Supports CUDA 8, 9 and 10 for GPU installations
 
 ## Installation
 
@@ -39,13 +44,6 @@ pip install voxel51-eta
 This will perform a [lite installation of ETA](#lite-installation). If you use
 an ETA feature that requires additional dependencies (e.g., `ffmpeg` or
 `tensorflow`), you will be prompted to install the relevant packages.
-
-## Docker Installation
-
-If you prefer to operate via Docker, see the
-[Docker Build Guide](https://github.com/voxel51/eta/blob/develop/docs/docker_build_guide.md)
-for simple instructions for building a Docker image with an ETA environment
-installed.
 
 ## Installation from source
 
@@ -60,7 +58,7 @@ It is assumed that you already have
 > `python` and `pip`, respectively.
 
 We strongly recommend that you install ETA
-[in a virtual environment](https://github.com/voxel51/eta/blob/develop/docs/virtualenv_guide.md)
+[in a virtual environment](https://github.com/voxel51/eta/blob/main/docs/virtualenv_guide.md)
 to maintain a clean workspace.
 
 #### Step 1: Clone the repository
@@ -80,25 +78,12 @@ Note that the install script supports flags that control things like (on macOS)
 whether `port` or `brew` is used to install packages. Run
 `bash install.bash -h` for more information.
 
-For Linux installs, the script inspects your system to see if CUDA is installed
-via the `lspci` command. If CUDA is available, TensorFlow is installed with GPU
-support.
+The install script does not install TensorFlow; if you use ETA features that
+require it, install the version appropriate for your system.
 
-The table below lists the version of TensorFlow that will be installed by the
-installer, as recommended by the
-[tested build configurations](https://www.tensorflow.org/install/source#tested_build_configurations):
-
-| CUDA Version Found | TensorFlow Version Installed |
-| ------------------ | ---------------------------- |
-| CUDA 8             | `tensorflow-gpu~=1.4`        |
-| CUDA 9             | `tensorflow-gpu~=1.12`       |
-| CUDA 10            | `tensorflow-gpu~=1.15`       |
-| Other CUDA         | `tensorflow-gpu~=1.15`       |
-| No CUDA            | `tensorflow~=1.15`           |
-
-> Note that ETA also supports TensorFlow 2.X. The only problems you may face
-> when using ETA with TensorFlow 2 are when trying to run inference with
-> [ETA models](https://github.com/voxel51/eta/blob/develop/eta/models/manifest.json)
+> Note that ETA supports TensorFlow 1.X and 2.X. The only problems you may
+> face when using ETA with TensorFlow 2 are when trying to run inference with
+> [ETA models](https://github.com/voxel51/eta/blob/main/eta/models/manifest.json)
 > that only support TensorFlow 1. A notable case here are TF-slim models. In
 > such cases, you should see an informative error message alerting you of the
 > requirement mismatch.
@@ -167,22 +152,22 @@ features of ETA, including building and running pipelines, downloading models,
 and interacting with remote storage.
 
 To explore the CLI, type `eta --help`, and see the
-[CLI Guide](https://github.com/voxel51/eta/blob/develop/docs/cli_guide.md) for
+[CLI Guide](https://github.com/voxel51/eta/blob/main/docs/cli_guide.md) for
 complete information.
 
 ## Quickstart
 
 Get your feet wet with ETA by running some of examples in the
-[examples folder](https://github.com/voxel51/eta/tree/develop/eta/examples).
+[examples folder](https://github.com/voxel51/eta/tree/main/eta/examples).
 
-Also, see the [docs folder](https://github.com/voxel51/eta/tree/develop/docs)
+Also, see the [docs folder](https://github.com/voxel51/eta/tree/main/docs)
 for more documentation about the various components of the ETA library.
 
 ## Organization
 
 The ETA package is organized as described below. For more information about the
 design and function of the various ETA components, read the documentation in
-the [docs folder](https://github.com/voxel51/eta/tree/develop/docs).
+the [docs folder](https://github.com/voxel51/eta/tree/main/docs).
 
 | Directory         | Description                                                                                                                                                                                                                                                                                  |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -191,9 +176,9 @@ the [docs folder](https://github.com/voxel51/eta/tree/develop/docs).
 | `eta/detectors`   | wrappers for performing inference with common detectors                                                                                                                                                                                                                                      |
 | `eta/docs`        | documentation about the ETA library                                                                                                                                                                                                                                                          |
 | `eta/examples`    | examples of using the ETA library                                                                                                                                                                                                                                                            |
-| `eta/models`      | library of ML models. The `manifest.json` file in this folder enumerates the models, which are downloaded to this folder as needed. See the [Models developer's guide](https://github.com/voxel51/eta/blob/develop/docs/models_dev_guide.md) for more information about ETA's model registry |
-| `eta/modules`     | library of video processing/analytics modules. See the [Module developer's guide](https://github.com/voxel51/eta/blob/develop/docs/modules_dev_guide.md) for more information about ETA modules                                                                                              |
-| `eta/pipelines`   | library of video processing/analytics pipelines. See the [Pipeline developer's guide](https://github.com/voxel51/eta/blob/develop/docs/pipelines_dev_guide.md) for more information about ETA pipelines                                                                                      |
+| `eta/models`      | library of ML models. The `manifest.json` file in this folder enumerates the models, which are downloaded to this folder as needed. See the [Models developer's guide](https://github.com/voxel51/eta/blob/main/docs/models_dev_guide.md) for more information about ETA's model registry |
+| `eta/modules`     | library of video processing/analytics modules. See the [Module developer's guide](https://github.com/voxel51/eta/blob/main/docs/modules_dev_guide.md) for more information about ETA modules                                                                                              |
+| `eta/pipelines`   | library of video processing/analytics pipelines. See the [Pipeline developer's guide](https://github.com/voxel51/eta/blob/main/docs/pipelines_dev_guide.md) for more information about ETA pipelines                                                                                      |
 | `eta/resources`   | resources such as media, templates, etc                                                                                                                                                                                                                                                      |
 | `eta/segmenters`  | wrappers for performing inference with common semantic segmenters                                                                                                                                                                                                                            |
 | `eta/tensorflow`  | third-party TensorFlow repositories that ETA builds upon                                                                                                                                                                                                                                     |

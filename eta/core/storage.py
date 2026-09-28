@@ -8,7 +8,7 @@ This module currently provides clients for the following storage resources:
 - S3 buckets via the `boto3` package
 - Google Cloud buckets via the `google.cloud.storage` package
 - Google Drive via the `googleapiclient` package
-- Remote servers via the `pysftp` package
+- Remote servers via the `paramiko` package
 - Web storage via HTTP requests
 - Local disk storage
 
@@ -18,12 +18,15 @@ voxel51.com
 
 import configparser
 import datetime
-import dateutil.parser
 import io
 import itertools
 import logging
 import os
+import posixpath
+import stat
 import re
+
+import dateutil.parser
 import requests
 
 try:
@@ -34,9 +37,10 @@ except ImportError:
 import urllib3
 
 try:
+    import azure.core.credentials as azc
+    import azure.core.exceptions as aze
     import azure.identity as azi
     import azure.storage.blob as azb
-    import azure.core.exceptions as aze
     import boto3
     import botocore
     import botocore.config as bcc
@@ -44,17 +48,16 @@ try:
     import google.api_core.exceptions as gae
     import google.api_core.retry as gar
     import google.auth as ga
-    import google.auth.transport.requests as gatr
     import google.auth.compute_engine as gace
+    import google.auth.transport.requests as gatr
     import google.cloud.storage as gcs
-    from google.cloud.storage._signing import generate_signed_url_v4
-    from google.auth import impersonated_credentials
-    from google.auth.identity_pool import (
-        Credentials as IdentityPoolCredentials,
-    )
     import googleapiclient.discovery as gad
     import googleapiclient.http as gah
-    import pysftp
+    import paramiko
+    from google.auth import impersonated_credentials
+    from google.auth.identity_pool import \
+        Credentials as IdentityPoolCredentials
+    from google.cloud.storage._signing import generate_signed_url_v4
 except ImportError as e:
     raise ImportError(
         "The requested operation requires extra dependencies; install "
@@ -968,35 +971,71 @@ class _BotoStorageClient(StorageClient, CanSyncDirectories):
                 list of metadata dictionaries (when `return_metadata == True`)
                 for the files in the folder
         """
-        bucket, folder_name = self._parse_path(cloud_folder)
+        items = []
+        page_token = None
+        while True:
+            page, page_token = self.list_files_in_folder_page(
+                cloud_folder,
+                page_token=page_token,
+                recursive=recursive,
+                return_metadata=return_metadata,
+            )
+            items.extend(page)
+            if page_token is None:
+                break
+
+        return items
+
+    def list_files_in_folder_page(
+        self,
+        dirpath,
+        page_token=None,
+        page_size=1000,
+        recursive=False,
+        return_metadata=False,
+    ):
+        """Returns one page of files in the given cloud folder.
+
+        Args:
+            dirpath: a cloud folder URI
+            page_token (None): continuation token from a previous call
+            page_size (1000): maximum number of items per page
+            recursive (False): whether to list files recursively
+            return_metadata (False): whether to return metadata dicts
+                instead of paths
+
+        Returns:
+            a tuple of (items, next_token) where items is a list of full
+            cloud paths (or metadata dicts) and next_token is ``None``
+            when no more pages remain
+        """
+        bucket, folder_name = self._parse_path(dirpath)
         if folder_name and not folder_name.endswith("/"):
             folder_name += "/"
 
-        kwargs = {"Bucket": bucket, "Prefix": folder_name}
+        kwargs = dict(Bucket=bucket, Prefix=folder_name, MaxKeys=page_size)
         if not recursive:
             kwargs["Delimiter"] = "/"
+        if page_token:
+            kwargs["ContinuationToken"] = page_token
 
-        paths_or_metadata = []
-        prefix = self._get_prefix(cloud_folder) + bucket + "/"
-        while True:
-            resp = self._client.list_objects_v2(**kwargs)
+        response = self._client.list_objects_v2(**kwargs)
+        contents = [
+            obj
+            for obj in response.get("Contents", [])
+            if not obj["Key"].endswith("/")
+        ]
+        next_token = response.get("NextContinuationToken")
 
-            for obj in resp.get("Contents", []):
-                path = obj["Key"]
-                if not path.endswith("/"):
-                    if return_metadata:
-                        paths_or_metadata.append(
-                            self._get_object_metadata(bucket, obj)
-                        )
-                    else:
-                        paths_or_metadata.append(prefix + path)
+        if return_metadata:
+            items = [
+                self._get_object_metadata(bucket, obj) for obj in contents
+            ]
+            return items, next_token
 
-            try:
-                kwargs["ContinuationToken"] = resp["NextContinuationToken"]
-            except KeyError:
-                break
-
-        return paths_or_metadata
+        path_prefix = self._get_prefix(dirpath) + bucket + "/"
+        items = [path_prefix + obj["Key"] for obj in contents]
+        return items, next_token
 
     def list_subfolders(self, cloud_folder):
         """Returns a list of sub "folders" in the given cloud "folder".
@@ -2133,7 +2172,45 @@ class GoogleCloudStorageClient(
                 list of metadata dictionaries (when `return_metadata == True`)
                 for the files in the folder
         """
-        bucket_name, folder_name = self._parse_path(cloud_folder)
+        items = []
+        page_token = None
+        while True:
+            page, page_token = self.list_files_in_folder_page(
+                cloud_folder,
+                page_token=page_token,
+                recursive=recursive,
+                return_metadata=return_metadata,
+            )
+            items.extend(page)
+            if page_token is None:
+                break
+
+        return items
+
+    def list_files_in_folder_page(
+        self,
+        dirpath,
+        page_token=None,
+        page_size=1000,
+        recursive=False,
+        return_metadata=False,
+    ):
+        """Returns one page of files in the given cloud folder.
+
+        Args:
+            dirpath: a cloud folder URI
+            page_token (None): continuation token from a previous call
+            page_size (1000): maximum number of items per page
+            recursive (False): whether to list files recursively
+            return_metadata (False): whether to return metadata dicts
+                instead of paths
+
+        Returns:
+            a tuple of (items, next_token) where items is a list of full
+            cloud paths (or metadata dicts) and next_token is ``None``
+            when no more pages remain
+        """
+        bucket_name, folder_name = self._parse_path(dirpath)
         if folder_name and not folder_name.endswith("/"):
             folder_name += "/"
 
@@ -2142,26 +2219,22 @@ class GoogleCloudStorageClient(
             bucket_name,
             prefix=folder_name,
             delimiter=delimiter,
+            max_results=page_size,
+            page_token=page_token,
             retry=self._retry,
         )
 
-        # Return metadata dictionaries for each file
-        if return_metadata:
-            metadata = []
-            for blob in blobs:
-                if not blob.name.endswith("/"):
-                    metadata.append(self._get_file_metadata(blob))
-
-            return metadata
-
-        # Return paths for each file
-        paths = []
         prefix = "gs://" + bucket_name + "/"
-        for blob in blobs:
-            if not blob.name.endswith("/"):
-                paths.append(prefix + blob.name)
 
-        return paths
+        if return_metadata:
+            items_raw = [b for b in blobs if not b.name.endswith("/")]
+            next_token = blobs.next_page_token
+            items = [self._get_file_metadata(b) for b in items_raw]
+            return items, next_token
+
+        items = [prefix + b.name for b in blobs if not b.name.endswith("/")]
+        next_token = blobs.next_page_token
+        return items, next_token
 
     def list_subfolders(self, cloud_folder):
         """Returns a list of sub "folders" in the given "folder" in GCS.
@@ -2397,6 +2470,10 @@ class NeedsAzureCredentials(object):
         client_id = ...
         secret = ...
         tenant = ...
+        account_name = ...
+
+        [default]
+        sas_token = ...
         account_name = ...
 
     See the following pages for more information:
@@ -2650,6 +2727,7 @@ class AzureStorageClient(
         account_key = credentials.get("account_key", None)
         conn_str = credentials.get("conn_str", None)
         alias = credentials.pop("alias", None)
+        sas_token = credentials.get("sas_token", None)
 
         # https://github.com/Azure/azure-sdk-for-python/issues/12102#issuecomment-645641481
         if max_pool_connections is not None:
@@ -2692,6 +2770,8 @@ class AzureStorageClient(
                 credential = azi.ClientSecretCredential(
                     tenant_id, client_id, client_secret, **kwargs
                 )
+            elif sas_token:
+                credential = azc.AzureSasCredential(sas_token)
             else:
                 credential = azi.DefaultAzureCredential(**kwargs)
 
@@ -2738,11 +2818,12 @@ class AzureStorageClient(
         self._account_key = account_key
         self._alias = alias
         self._prefixes = tuple(prefixes)
+        self._sas_token = sas_token
 
         self._user_delegation_key = None
         self._user_delegation_expiration = None
 
-        if self._account_key is None:
+        if self._account_key is None and self._sas_token is None:
             self._generate_user_delegation_key()
 
         self._permissions = {
@@ -2967,31 +3048,74 @@ class AzureStorageClient(
                 list of metadata dictionaries (when `return_metadata == True`)
                 for the files in the folder
         """
-        container_name, folder_name = self._parse_path(cloud_folder)
+        items = []
+        page_token = None
+        while True:
+            page, page_token = self.list_files_in_folder_page(
+                cloud_folder,
+                page_token=page_token,
+                recursive=recursive,
+                return_metadata=return_metadata,
+            )
+            items.extend(page)
+            if page_token is None:
+                break
+
+        return items
+
+    def list_files_in_folder_page(
+        self,
+        dirpath,
+        page_token=None,
+        page_size=1000,
+        recursive=False,
+        return_metadata=False,
+    ):
+        """Returns one page of files in the given cloud folder.
+
+        Args:
+            dirpath: a cloud folder URI
+            page_token (None): continuation token from a previous call
+            page_size (1000): maximum number of items per page
+            recursive (False): whether to list files recursively
+            return_metadata (False): whether to return metadata dicts
+                instead of paths
+
+        Returns:
+            a tuple of (items, next_token) where items is a list of full
+            cloud paths (or metadata dicts) and next_token is ``None``
+            when no more pages remain
+        """
+        container_name, folder_name = self._parse_path(dirpath)
         if folder_name and not folder_name.endswith("/"):
             folder_name += "/"
 
-        blobs = self._list_blobs(
-            container_name, prefix=folder_name, recursive=recursive
-        )
+        container = self._client.get_container_client(container_name)
+        if recursive:
+            pager = container.list_blobs(
+                name_starts_with=folder_name, results_per_page=page_size
+            ).by_page(continuation_token=page_token)
+        else:
+            pager = container.walk_blobs(
+                name_starts_with=folder_name,
+                delimiter="/",
+                results_per_page=page_size,
+            ).by_page(continuation_token=page_token)
 
-        # Return metadata dictionaries for each file
+        page = next(pager, [])
+        prefix = self._get_prefix(dirpath) + container_name + "/"
+        next_token = pager.continuation_token or None
+
         if return_metadata:
-            metadata = []
-            for blob in blobs:
-                if not blob.name.endswith("/"):
-                    metadata.append(self._get_file_metadata(blob))
+            items = [
+                self._get_file_metadata(b)
+                for b in page
+                if not b.name.endswith("/")
+            ]
+            return items, next_token
 
-            return metadata
-
-        # Return paths for each file
-        paths = []
-        prefix = self._get_prefix(cloud_folder) + container_name + "/"
-        for blob in blobs:
-            if not blob.name.endswith("/"):
-                paths.append(prefix + blob.name)
-
-        return paths
+        items = [prefix + b.name for b in page if not b.name.endswith("/")]
+        return items, next_token
 
     def list_subfolders(self, cloud_folder):
         """Returns a list of sub "folders" in the given "folder" in Azure
@@ -3043,21 +3167,23 @@ class AzureStorageClient(
         """
         container_name, blob_name = self._parse_path(cloud_path)
 
-        self._refresh_user_delegation_key_if_necessary()
+        signature = self._sas_token
+        if signature is None:
+            self._refresh_user_delegation_key_if_necessary()
 
-        permission = self._permissions[method.upper()]
-        expiry = datetime.datetime.utcnow() + datetime.timedelta(hours=hours)
+            permission = self._permissions[method.upper()]
+            expiry = datetime.datetime.utcnow() + datetime.timedelta(hours=hours)
 
-        signature = azb.generate_blob_sas(
-            account_name=self._account_name,
-            container_name=container_name,
-            blob_name=blob_name,
-            account_key=self._account_key,
-            user_delegation_key=self._user_delegation_key,
-            permission=permission,
-            expiry=expiry,
-            content_type=content_type,
-        )
+            signature = azb.generate_blob_sas(
+                account_name=self._account_name,
+                container_name=container_name,
+                blob_name=blob_name,
+                account_key=self._account_key,
+                user_delegation_key=self._user_delegation_key,
+                permission=permission,
+                expiry=expiry,
+                content_type=content_type,
+            )
 
         root = self._account_url
         return root + "/" + container_name + "/" + blob_name + "?" + signature
@@ -4585,7 +4711,7 @@ class SFTPStorageClient(StorageClient, NeedsSSHCredentials):
             remote_dir: the remote directory to write the uploaded directory
         """
         with self._connection as sftp:
-            sftp.put_r(local_dir, remote_dir)
+            _sftp_put_r(sftp, local_dir, remote_dir)
 
     def download_dir(self, remote_dir, local_dir):
         """Downloads the remote directory to the given local directory.
@@ -4595,7 +4721,7 @@ class SFTPStorageClient(StorageClient, NeedsSSHCredentials):
             local_dir: the local directory to write the downloaded directory
         """
         with self._connection as sftp:
-            sftp.get_r(remote_dir, local_dir)
+            _sftp_get_r(sftp, remote_dir, local_dir)
 
     def make_dir(self, remote_dir, mode=777):
         """Makes the specified remote directory, recursively if necessary.
@@ -4605,7 +4731,7 @@ class SFTPStorageClient(StorageClient, NeedsSSHCredentials):
             mode: int representation of the octal permissions for directory
         """
         with self._connection as sftp:
-            sftp.makedirs(remote_dir, mode=mode)
+            _sftp_makedirs(sftp, remote_dir, mode=mode)
 
     def delete_dir(self, remote_dir):
         """Deletes the remote directory, which must be empty.
@@ -4618,8 +4744,8 @@ class SFTPStorageClient(StorageClient, NeedsSSHCredentials):
 
 
 class _SFTPConnection(object):
-    """An internal class for managing a pysftp.Connection that can either be
-    kept open manually controlled or automatically opened and closed on a
+    """An internal class for managing a paramiko SFTP session that can either
+    be kept open manually controlled or automatically opened and closed on a
     per-context basis.
 
     Attributes:
@@ -4633,21 +4759,21 @@ class _SFTPConnection(object):
 
         # Automatic usage
         conn = _SFTPConnection(..., keep_open=False)
-        # no pysftp.Connection is opened yet
-        with conn as pyconn:
-            # pyconn is a open pysftp.Connection object that is automatically
-            #closed when this context is exited
-        with conn as pyconn:
-            # pyconn is a new pysftp.Connection
+        # no SFTP session is opened yet
+        with conn as sftp:
+            # sftp is an open paramiko.SFTPClient that is automatically
+            # closed when this context is exited
+        with conn as sftp:
+            # sftp is a new paramiko.SFTPClient
         # no need to call conn.close()
 
         # Manual usage
         conn = _SFTPConnection(..., keep_open=True)
-        # an underlying pysftp.Connection is immediately opened
-        with conn as pyconn:
-            # pyconn is the opened pysftp.Connection
-        with conn as pyconn:
-            # pyconn is the same pysftp.Connection
+        # an underlying SFTP session is immediately opened
+        with conn as sftp:
+            # sftp is the opened paramiko.SFTPClient
+        with conn as sftp:
+            # sftp is the same paramiko.SFTPClient
         conn.close()
     """
 
@@ -4674,6 +4800,7 @@ class _SFTPConnection(object):
         self.port = port
         self.keep_open = False
 
+        self._ssh = None
         self._pyconn = None
         self.set_keep_open(keep_open)
 
@@ -4707,17 +4834,73 @@ class _SFTPConnection(object):
             self._close()
 
     def _open(self):
-        self._pyconn = pysftp.Connection(
+        ssh = paramiko.SSHClient()
+        ssh.load_system_host_keys()
+        ssh.connect(
             self.hostname,
-            username=self.username,
-            private_key=self.private_key_path,
             port=self.port,
+            username=self.username,
+            key_filename=self.private_key_path,
         )
+        self._ssh = ssh
+        self._pyconn = ssh.open_sftp()
 
     def _close(self):
         if self._pyconn is not None:
             self._pyconn.close()
+
+        if self._ssh is not None:
+            self._ssh.close()
+
         self._pyconn = None
+        self._ssh = None
+
+
+def _sftp_makedirs(sftp, remote_dir, mode=777):
+    # Interprets `mode` as the string representation of an octal permission,
+    # e.g. 777 -> 0o777, matching the semantics of `pysftp.makedirs`
+    mode = int(str(mode), 8)
+
+    to_make = []
+    remote_dir = posixpath.normpath(remote_dir)
+    while remote_dir not in ("/", "", "."):
+        try:
+            sftp.stat(remote_dir)
+            break
+        except IOError:
+            to_make.append(remote_dir)
+            remote_dir = posixpath.dirname(remote_dir)
+
+    for path in reversed(to_make):
+        sftp.mkdir(path, mode=mode)
+
+
+def _sftp_put_r(sftp, local_dir, remote_dir):
+    for root, _, files in os.walk(local_dir):
+        rel = os.path.relpath(root, local_dir)
+        if rel == ".":
+            rdir = remote_dir
+        else:
+            rdir = posixpath.join(remote_dir, *rel.split(os.sep))
+
+        _sftp_makedirs(sftp, rdir)
+        for filename in files:
+            sftp.put(
+                os.path.join(root, filename), posixpath.join(rdir, filename)
+            )
+
+
+def _sftp_get_r(sftp, remote_dir, local_dir):
+    if not os.path.isdir(local_dir):
+        os.makedirs(local_dir)
+
+    for entry in sftp.listdir_attr(remote_dir):
+        remote_path = posixpath.join(remote_dir, entry.filename)
+        local_path = os.path.join(local_dir, entry.filename)
+        if stat.S_ISDIR(entry.st_mode):
+            _sftp_get_r(sftp, remote_path, local_path)
+        else:
+            sftp.get(remote_path, localpath=local_path)
 
 
 def _read_file_in_chunks(file_obj, chunk_size):
